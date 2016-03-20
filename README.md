@@ -1,10 +1,24 @@
 # Ktor
+[![](https://jitpack.io/v/h0tk3y/ktor.svg)](https://jitpack.io/#h0tk3y/ktor)
+
 A small util library that helps you construct Kotlin object through reflection.
 
 * works with both constructors and properties
 * understand optional parameters and can treat nullable parameters as optional
 * one-level type-safety for generics (no deep analysis due to type erasure)
 * option to ignore unknown keys
+
+Using with Gradle
+---
+ 
+    repositories {
+        // ...
+        maven { url "https://jitpack.io" }
+    }
+    
+    dependencies {
+        compile 'com.github.h0tk3y:ktor:0.0.1'
+    }
 
 Example
 ---
