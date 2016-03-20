@@ -1,5 +1,6 @@
 # Konstruct
-[![](https://jitpack.io/v/h0tk3y/konstruct.svg)](https://jitpack.io/#h0tk3y/konstruct)
+[![Kotlin](https://img.shields.io/badge/kotlin-1.0.1-blue.svg)](http://kotlinlang.org)
+[![Get from JitPack](https://jitpack.io/v/h0tk3y/konstruct.svg)](https://jitpack.io/#h0tk3y/konstruct)
 
 A small constructor injection library that helps you construct Kotlin object through reflection.
 You provide a map, `Ktor` builds an object from it if it can, that's it.
