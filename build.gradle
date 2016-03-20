@@ -1,4 +1,4 @@
-group 'com.github.h0tk3y.ktor'
+group 'com.github.h0tk3y.konstruct'
 version '0.0.1'
 
 buildscript {

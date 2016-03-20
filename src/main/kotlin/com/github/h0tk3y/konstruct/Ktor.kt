@@ -1,4 +1,4 @@
-package com.github.h0tk3y
+package com.github.h0tk3y.konstruct
 
 import java.lang.reflect.ParameterizedType
 import java.lang.reflect.Type
@@ -8,12 +8,17 @@ import kotlin.comparisons.thenBy
 import kotlin.reflect.*
 import kotlin.reflect.jvm.javaType
 
+sealed class ConstructionProblem {
+    class MissingParameter(val name: String, val type: KType) : ConstructionProblem()
+    class UncheckedAssignment(val name: String, val type: KType, val value: Any?) : ConstructionProblem()
+    class UnknownData(val name: String, val value: Any?) : ConstructionProblem()
+}
+
 /**
  * A construction attempt result.
  * @property instance the constructed instance, or null if the construction failed.
  */
 sealed class KtorResult<T>(open val instance: T?) {
-
     /**
      * Whether the instance was successfully constructed.
      */
@@ -22,23 +27,11 @@ sealed class KtorResult<T>(open val instance: T?) {
     /**
      * Successful construction.
      * @property instance the constructed instance.
-     * @property unknownData subset of `data` which was not assigned to constructor parameters or properties,
-     *                       always empty if `ignoreUnknownData` is `false`
+     * @property problems problems that were found for the selected construction routine.
      */
-    class Success<T>(override val instance: T, val unknownData: Map<String, Any?>) : KtorResult<T>(instance)
+    class Success<T>(override val instance: T, val problems: List<ConstructionProblem>) : KtorResult<T>(instance)
 
-    /**
-     * Fail due to impossibility to assign some of the `data`.
-     * @property unknownData shows for each valid constructor which data is unknown to it.
-     *           Data which can be assigned to the properties is not considered unknown.
-     */
-    class FailUnknownData<T>(val unknownData: List<Map<String, Any?>>) : KtorResult<T>(null)
-
-    /**
-     * Fail due to lack of parameters for constructors.
-     * @property dataToAdd shows for each constructor which data it needs in addition to the passed data.
-     */
-    class FailMissingData<T>(val dataToAdd: List<Map<String, KType>>) : KtorResult<T>(null)
+    class Fail<T>(val problems: List<List<ConstructionProblem>>) : KtorResult<T>(null)
 }
 
 /**
@@ -58,16 +51,19 @@ abstract class TypeReference<T> : Comparable<TypeReference<T>> {
  * @param typeRef [TypeReference] for [T] to retain its generic parameters.
  *
  * @property kClass class token for [T]
- * @property ignoreUnknownData whether the items can be left not assigned to a constructer parameter or
+ * @property ignoreUnknownData whether the items can be left not assigned to a constructor parameter or
  *                             a property setter. If true, such data items will be reported, if false,
- *                             [KtorResult.FailUnknownData] will be returned from [construct].
+ *                             [KtorResult.Fail] will be returned from [construct].
  * @property nullableIsOptional whether nullable parameters should be treated as optional and thus assigned
- *                              nulls if no other value is provided in `data`.
+ *                             nulls if no other value is provided in `data`.
+ * @property ignoreUncheckedAssignments whether the assignments unsafe due to generic types erasure should only
+ *                             be reported as warnings. Otherwise, [KtorResult.Fail] will be returned from [construct].
  */
 class Ktor<T : Any>(val kClass: KClass<T>,
                     typeRef: TypeReference<T>,
                     val ignoreUnknownData: Boolean = false,
-                    val nullableIsOptional: Boolean = false) {
+                    val nullableIsOptional: Boolean = false,
+                    val ignoreUncheckedAssignments: Boolean = false) {
 
     private fun Type.rawClass(): Class<*> = when (this) {
         is Class<*> -> this
@@ -86,27 +82,32 @@ class Ktor<T : Any>(val kClass: KClass<T>,
                 }?.toMap()
     }.orEmpty()
 
+    private enum class Assignment { SAFE, UNCHECKED, UNABLE }
+
     /**
      * Checks whether a value can be assigned to [kType], possibly nullable and possibly generic.
      */
-    private fun Any?.assignableToKType(kType: KType): Boolean = when (this) {
-        null -> kType.isMarkedNullable
+    private fun Any?.assignableToKType(kType: KType): Assignment = when (this) {
+        null -> if (kType.isMarkedNullable) Assignment.SAFE else Assignment.UNABLE
         else -> {
-            val javaType = kType.javaType
-            fun Any.assignableToJavaClass(clazz: Class<*>): Boolean {
-                return clazz.let {
-                    clazz.isAssignableFrom(javaClass) ||
-                    clazz.kotlin.javaObjectType.isAssignableFrom(this@assignableToJavaClass.javaClass)
+            val jClass = this.javaClass
+            val toJType = kType.javaType
+            fun assignableToJavaClass(clazz: Class<*>): Assignment {
+                val compatible = clazz.isAssignableFrom(jClass) ||
+                                 clazz.kotlin.javaObjectType.isAssignableFrom(jClass)
+                return when {
+                    compatible -> if (jClass.typeParameters.isEmpty()) Assignment.SAFE else Assignment.UNCHECKED
+                    else -> Assignment.UNABLE
                 }
             }
-            when (javaType) {
-                is Class<*> -> assignableToJavaClass(javaType)
-                is ParameterizedType -> assignableToJavaClass(javaType.rawClass())
-
-                //todo warn in case of unchecked casts
-                is TypeVariable<*> -> assignableToJavaClass(rawGenerics[javaType]!!)
-
-                else -> false
+            when (toJType) {
+                is Class<*> -> assignableToJavaClass(toJType)
+                is ParameterizedType -> assignableToJavaClass(toJType.rawClass())
+                is TypeVariable<*> -> {
+                    val rawActualClass = rawGenerics[toJType]
+                    rawActualClass?.let { assignableToJavaClass(it) } ?: Assignment.UNCHECKED
+                }
+                else -> Assignment.UNABLE
             }
         }
     }
@@ -126,19 +127,30 @@ class Ktor<T : Any>(val kClass: KClass<T>,
     fun construct(data: Map<String, Any?>): KtorResult<T> {
         class CtorCandidate(val ctor: KFunction<T>,
                             val propsAssignments: List<Pair<KMutableProperty.Setter<out Any?>, Any?>>,
-                            val unknownData: Map<String, Any?>,
-                            val missingData: Map<String, KType>)
+                            val problems: List<ConstructionProblem>)
 
         val candidates = kClass.constructors.map { ctor ->
+            val problems = mutableListOf<ConstructionProblem>()
+
             val paramByName = ctor.parameters.map { it.name to it }.toMap()
             val passToCtorData = data.filter { d ->
                 val (name, value) = d
-                paramByName[name]?.let { p -> value.assignableToKType(p.type) } ?: false
+                val param = paramByName[name]
+                param?.let { p ->
+                    val assignable = value.assignableToKType(p.type)
+                    //missing data will be reported later, since it can still be assigned to a property
+                    if (assignable == Assignment.UNCHECKED)
+                        problems.add(ConstructionProblem.UncheckedAssignment(d.key, param.type, d.value))
+                    return@let assignable != Assignment.UNABLE
+                } ?: false
             }
 
-            val missingCtorParams = ctor.parameters.filterNot {
-                it.isOptional || it.name in passToCtorData || (nullableIsOptional && it.type.isMarkedNullable)
-            }.associate { it.name!! to it.type }
+            problems += ctor.parameters
+                    .filterNot {
+                        it.isOptional ||
+                        it.name in passToCtorData ||
+                        nullableIsOptional && it.type.isMarkedNullable
+                    }.map { ConstructionProblem.MissingParameter(it.name!!, it.type) }
 
             val mutablePropsByName = kClass.memberProperties
                     .filterIsInstance<KMutableProperty<*>>()
@@ -146,30 +158,34 @@ class Ktor<T : Any>(val kClass: KClass<T>,
             val propsForData = data.filterKeys { it !in passToCtorData }
                     .mapNotNull { d ->
                         mutablePropsByName[d.key]?.let { prop ->
-                            if (d.value.assignableToKType(prop.setter.parameters.last().type))
+                            val assignable = d.value.assignableToKType(prop.setter.parameters.last().type)
+                            if (assignable == Assignment.UNCHECKED)
+                                problems.add(ConstructionProblem.UncheckedAssignment(d.key, prop.returnType, d.value))
+                            return@let if (assignable != Assignment.UNABLE)
                                 d.key to prop.setter
                             else null
                         }
                     }.toMap()
-            val unknownData = data.filterKeys { it !in passToCtorData && it !in propsForData }
+
+            problems += data
+                    .filterKeys { it !in passToCtorData && it !in propsForData }
+                    .map { ConstructionProblem.UnknownData(it.key, it.value) }
+
             return@map CtorCandidate(
                     ctor,
                     propsForData.map { it.value to data[it.key] },
-                    unknownData,
-                    missingCtorParams)
+                    problems)
         }
 
-        if (candidates.all { it.missingData.isNotEmpty() }) {
-            return KtorResult.FailMissingData(candidates.map { it.missingData })
-        }
-
-        if (!ignoreUnknownData && candidates.all { it.unknownData.isNotEmpty() }) {
-            return KtorResult.FailUnknownData(candidates.filter { it.missingData.isEmpty() }.map { it.unknownData })
-        }
-
-        val bestCandidate = candidates
-                .filter { it.missingData.isEmpty() && (ignoreUnknownData || it.unknownData.isEmpty()) }
-                .minWith(compareBy<CtorCandidate> { it.missingData.size }.thenBy { it.propsAssignments.size })!!
+        val bestCandidate =
+                candidates.filter {
+                    it.problems.all {
+                        it !is ConstructionProblem.MissingParameter &&
+                        (ignoreUnknownData || it !is ConstructionProblem.UnknownData) &&
+                        (ignoreUncheckedAssignments || it !is ConstructionProblem.UncheckedAssignment)
+                    }
+                }.minWith(compareBy<CtorCandidate> { it.problems.size }.thenBy { it.propsAssignments.size })
+                ?: return KtorResult.Fail(candidates.map { it.problems })
 
         val args = bestCandidate.ctor.parameters
                 .filter { nullableIsOptional || it.name in data }
@@ -178,7 +194,7 @@ class Ktor<T : Any>(val kClass: KClass<T>,
         val obj = bestCandidate.ctor.callBy(args)
         bestCandidate.propsAssignments.forEach { it.first.call(obj, it.second) }
 
-        return KtorResult.Success(obj, bestCandidate.unknownData)
+        return KtorResult.Success(obj, bestCandidate.problems)
     }
 }
 
@@ -187,5 +203,6 @@ class Ktor<T : Any>(val kClass: KClass<T>,
  */
 inline fun <reified T : Any> ktor(
         ignoreUnknownData: Boolean = false,
-        nullableIsOptional: Boolean = false
-) = Ktor(T::class, object : TypeReference<T>() {}, ignoreUnknownData, nullableIsOptional)
+        nullableIsOptional: Boolean = false,
+        ignoreUncheckedCasts: Boolean = false
+) = Ktor(T::class, object : TypeReference<T>() {}, ignoreUnknownData, nullableIsOptional, ignoreUncheckedCasts)

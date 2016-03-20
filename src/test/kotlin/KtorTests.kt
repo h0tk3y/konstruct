@@ -1,9 +1,11 @@
-import com.github.h0tk3y.KtorResult
-import com.github.h0tk3y.ktor
+import com.github.h0tk3y.konstruct.ConstructionProblem
+import com.github.h0tk3y.konstruct.KtorResult
+import com.github.h0tk3y.konstruct.ktor
 import org.junit.Assert
 import org.junit.Assert.*
 import org.junit.Test
 
+@Suppress("UNUSED_PARAMETER", "unused")
 class KtorTests {
     @Test fun simplePositive() {
         class Person(val name: String, val age: Int)
@@ -19,7 +21,7 @@ class KtorTests {
         val person = result.instance
         assertEquals(name, person.name)
         assertEquals(age, person.age)
-        assertTrue(result.unknownData.isEmpty())
+        assertTrue(result.problems.isEmpty())
     }
 
     @Test fun correctTypes() {
@@ -49,10 +51,15 @@ class KtorTests {
             constructor(f: Float, n: Any?): this(0, 0.0, "")
         }
         val ktor = ktor<A>()
-        val result = ktor.construct("i" to 1, "f" to 1f) as KtorResult.FailMissingData<A>
-        assertTrue(result.dataToAdd.size == 2)
-        assertTrue(result.dataToAdd.any { it.keys == setOf("d", "s") })
-        assertTrue(result.dataToAdd.any { it.keys == setOf("n") })
+        val result = ktor.construct("i" to 1, "f" to 1f) as KtorResult.Fail<A>
+        assertTrue(result.problems.size == 2)
+        assertTrue(result.problems.any {
+            it.any { it is ConstructionProblem.MissingParameter && it.name == "d" } &&
+            it.any { it is ConstructionProblem.MissingParameter && it.name == "s" }
+        })
+        assertTrue(result.problems.any {
+            it.any { it is ConstructionProblem.MissingParameter && it.name == "n" }
+        })
     }
 
     @Test fun ignoringUnknownData() {
@@ -65,9 +72,12 @@ class KtorTests {
         val resultDefault = ktorDefault.construct(map)
         val resultNonStrict = ktorNonStrict.construct(map)
 
-        assertTrue(resultDefault is KtorResult.FailUnknownData)
-        resultDefault as KtorResult.FailUnknownData
-        assertEquals(mapOf("unknown" to 1), resultDefault.unknownData.single())
+        assertTrue(resultDefault is KtorResult.Fail)
+        resultDefault as KtorResult.Fail
+        assertTrue(resultDefault.problems.single().single().let {
+            it is ConstructionProblem.UnknownData &&
+            it.name == "unknown" && it.value == 1
+        })
 
         assertEquals(resultNonStrict.instance!!.value, 0)
     }
@@ -95,7 +105,7 @@ class KtorTests {
         assertTrue(positiveResult.success)
 
         val negativeResult = ktor.construct()
-        assertEquals(1, (negativeResult as KtorResult.FailMissingData).dataToAdd.single().size)
+        assertEquals(1, (negativeResult as KtorResult.Fail).problems.single().size)
     }
 
     @Test fun defaultConstructor() {
@@ -115,7 +125,6 @@ class KtorTests {
 
     @Test fun generics() {
         class GenericHolder<T>(val item: T)
-
         val ktor = ktor<GenericHolder<Int>>()
 
         val positiveResult = ktor.construct("item" to 1).instance
@@ -123,5 +132,31 @@ class KtorTests {
 
         assertEquals(1, positiveResult!!.item)
         assertNull(negativeResult)
+    }
+
+    @Test fun uncheckedAssignment() {
+        class Holder(val list: List<Int>)
+
+        val ktorDefault = ktor<Holder>()
+        val ktorNonStrict = ktor<Holder>(ignoreUncheckedCasts = true)
+
+        val map = mapOf("list" to listOf(1))
+        val negativeResult = ktorDefault.construct(map)
+        val positiveResult = ktorNonStrict.construct(map)
+
+        assertFalse(negativeResult.success)
+        assertTrue(positiveResult.success)
+    }
+
+    @Test fun uncheckedCastsWithGenerics() {
+        class GenericHolder<T>(val item: T)
+
+        val positive = ktor<GenericHolder<Int>>()
+                .construct("item" to 1) as KtorResult.Success
+        assertEquals(0, positive.problems.size)
+
+        val warning = ktor<GenericHolder<List<Int>>>(ignoreUncheckedCasts = true)
+                .construct("item" to listOf(1)) as KtorResult.Success
+        assertTrue(warning.problems.single() is ConstructionProblem.UncheckedAssignment)
     }
 }
