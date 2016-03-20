@@ -138,7 +138,7 @@ class KtorTests {
         class Holder(val list: List<Int>)
 
         val ktorDefault = ktor<Holder>()
-        val ktorNonStrict = ktor<Holder>(ignoreUncheckedCasts = true)
+        val ktorNonStrict = ktor<Holder>(ignoreUncheckedAssignments = true)
 
         val map = mapOf("list" to listOf(1))
         val negativeResult = ktorDefault.construct(map)
@@ -155,7 +155,7 @@ class KtorTests {
                 .construct("item" to 1) as KtorResult.Success
         assertEquals(0, positive.problems.size)
 
-        val warning = ktor<GenericHolder<List<Int>>>(ignoreUncheckedCasts = true)
+        val warning = ktor<GenericHolder<List<Int>>>(ignoreUncheckedAssignments = true)
                 .construct("item" to listOf(1)) as KtorResult.Success
         assertTrue(warning.problems.single() is ConstructionProblem.UncheckedAssignment)
     }

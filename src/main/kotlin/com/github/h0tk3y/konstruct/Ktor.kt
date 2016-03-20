@@ -8,10 +8,21 @@ import kotlin.comparisons.thenBy
 import kotlin.reflect.*
 import kotlin.reflect.jvm.javaType
 
+/**
+ * Report about a problem in process of an instance construction.
+ */
 sealed class ConstructionProblem {
-    class MissingParameter(val name: String, val type: KType) : ConstructionProblem()
-    class UncheckedAssignment(val name: String, val type: KType, val value: Any?) : ConstructionProblem()
-    class UnknownData(val name: String, val value: Any?) : ConstructionProblem()
+    class MissingParameter(val name: String, val type: KType) : ConstructionProblem() {
+        override fun toString() = "Missing value for parameter $name: $type"
+    }
+
+    class UncheckedAssignment(val name: String, val type: KType, val value: Any?) : ConstructionProblem() {
+        override fun toString() = "Unchecked assignment $name: $type = $value"
+    }
+
+    class UnknownData(val name: String, val value: Any?) : ConstructionProblem() {
+        override fun toString(): String = "Unknown data $name = $value"
+    }
 }
 
 /**
@@ -204,5 +215,5 @@ class Ktor<T : Any>(val kClass: KClass<T>,
 inline fun <reified T : Any> ktor(
         ignoreUnknownData: Boolean = false,
         nullableIsOptional: Boolean = false,
-        ignoreUncheckedCasts: Boolean = false
-) = Ktor(T::class, object : TypeReference<T>() {}, ignoreUnknownData, nullableIsOptional, ignoreUncheckedCasts)
+        ignoreUncheckedAssignments: Boolean = false
+) = Ktor(T::class, object : TypeReference<T>() {}, ignoreUnknownData, nullableIsOptional, ignoreUncheckedAssignments)
