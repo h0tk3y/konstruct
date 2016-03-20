@@ -1,5 +1,5 @@
 # Konstruct
-[![](https://jitpack.io/v/h0tk3y/ktor.svg)](https://jitpack.io/#h0tk3y/ktor)
+[![](https://jitpack.io/v/h0tk3y/konstruct.svg)](https://jitpack.io/#h0tk3y/konstruct)
 
 A small constructor injection library that helps you construct Kotlin object through reflection.
 You provide a map, `Ktor` builds an object from it if it can, that's it.
@@ -18,7 +18,7 @@ Using with Gradle
     }
     
     dependencies {
-        compile 'com.github.h0tk3y:ktor:0.0.1'
+        compile 'com.github.h0tk3y:konstruct:0.0.2'
     }
 
 Example
